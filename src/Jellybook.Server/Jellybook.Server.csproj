@@ -19,8 +19,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="..\Jellybook.Web\main.js" Link="Web\main.js" LogicalName="Jellybook.Server.Web.main.js" />
-    <EmbeddedResource Include="..\Jellybook.Web\vendor\jszip.js" Link="Web\vendor\jszip.js" LogicalName="Jellybook.Server.Web.vendor.jszip.js" />
-    <EmbeddedResource Include="..\Jellybook.Web\vendor\epubjs.js" Link="Web\vendor\epubjs.js" LogicalName="Jellybook.Server.Web.vendor.epubjs.js" />
   </ItemGroup>
 
 </Project>

@@ -39,14 +39,6 @@ public class JellybookController : ControllerBase
     [AllowAnonymous]
     public IActionResult GetMainScript() => ServeEmbedded("Jellybook.Server.Web.main.js", "application/javascript");
 
-    [HttpGet("web/vendor/jszip.js")]
-    [AllowAnonymous]
-    public IActionResult GetJszip() => ServeEmbedded("Jellybook.Server.Web.vendor.jszip.js", "application/javascript");
-
-    [HttpGet("web/vendor/epubjs.js")]
-    [AllowAnonymous]
-    public IActionResult GetEpubjs() => ServeEmbedded("Jellybook.Server.Web.vendor.epubjs.js", "application/javascript");
-
     private IActionResult ServeEmbedded(string resourceName, string mimeType)
     {
         var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
