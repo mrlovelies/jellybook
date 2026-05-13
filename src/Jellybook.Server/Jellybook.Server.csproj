@@ -15,6 +15,9 @@
   <ItemGroup>
     <PackageReference Include="Jellyfin.Controller" Version="10.11.8" />
     <PackageReference Include="SharpCompress" Version="1.0.0" />
+    <!-- SkiaSharp is provided by the Jellyfin host (3.116.1). ExcludeAssets=runtime
+         means we compile against the contract but don't ship our own copy. -->
+    <PackageReference Include="SkiaSharp" Version="3.116.1" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
