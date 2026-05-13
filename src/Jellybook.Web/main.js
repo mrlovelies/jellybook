@@ -111,6 +111,7 @@
       this.manifest = null;
       this.pageIndex = 0;
       this.preloadCache = new Map();
+      this.widePages = new Set(); // page indices known to be landscape (cover/spread)
       this.boundKeydown = this.onKeydown.bind(this);
       this.saveTimer = null;
       this.lastSavedValue = -1;
@@ -247,7 +248,13 @@
       if (!force && n === this.pageIndex && this.imgLeftEl.src) return;
       this.pageIndex = n;
 
-      const right = this.viewMode === 'double' && n + 1 < pc ? n + 1 : null;
+      // In double mode, hide right if either current or next is known-wide.
+      // Unknown wide-ness gets corrected after onload (re-render).
+      const wantPair = this.viewMode === 'double' && n + 1 < pc
+        && !this.widePages.has(n)
+        && !this.widePages.has(n + 1);
+      const right = wantPair ? n + 1 : null;
+
       if (right === null) {
         this.imgRightEl.classList.add('hidden');
         this.counterEl.textContent = `${n + 1} / ${pc}`;
@@ -262,28 +269,65 @@
         if (leftLoaded && rightLoaded) this.loadingEl.classList.remove('show');
       };
 
-      this.imgLeftEl.onload = () => { leftLoaded = true; maybeHideLoader(); };
+      const checkWide = (imgEl, idx) => {
+        if (imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+          const isWide = imgEl.naturalWidth > imgEl.naturalHeight;
+          if (isWide && !this.widePages.has(idx)) {
+            this.widePages.add(idx);
+            // If we're in double mode and just learned about a wide page in this pair, re-render
+            if (this.viewMode === 'double' && (idx === this.pageIndex || idx === this.pageIndex + 1)) {
+              this.render(this.pageIndex, true);
+            }
+          }
+        }
+      };
+
+      this.imgLeftEl.onload = () => {
+        leftLoaded = true;
+        checkWide(this.imgLeftEl, n);
+        maybeHideLoader();
+      };
       this.imgLeftEl.onerror = () => { leftLoaded = true; maybeHideLoader(); };
       this.imgLeftEl.src = this.pageUrl(n);
 
       if (right !== null) {
-        this.imgRightEl.onload = () => { rightLoaded = true; maybeHideLoader(); };
+        this.imgRightEl.onload = () => {
+          rightLoaded = true;
+          checkWide(this.imgRightEl, right);
+          maybeHideLoader();
+        };
         this.imgRightEl.onerror = () => { rightLoaded = true; maybeHideLoader(); };
         this.imgRightEl.src = this.pageUrl(right);
       } else {
         this.imgRightEl.removeAttribute('src');
       }
 
-      // reset scroll for single-width
       if (this.viewMode === 'single-width') this.stageEl.scrollTop = 0;
 
-      // preload neighbors based on stride
-      const stride = this.viewMode === 'double' ? 2 : 1;
+      // preload neighbors — in double mode, stride is 1 if next is wide, else 2
+      const stride = this.computeStride(/*forward*/ true);
       this.preload(n + stride);
-      this.preload(n + stride * 2);
-      this.preload(n - stride);
+      this.preload(n + stride + 1);
+      this.preload(n - 1);
 
       this.scheduleSave();
+    }
+
+    computeStride(forward) {
+      if (this.viewMode !== 'double') return 1;
+      const pc = this.manifest.pageCount;
+      if (forward) {
+        // If currently showing only one image (because of wide), advance by 1
+        if (this.imgRightEl.classList.contains('hidden')) return 1;
+        // Showing pair: skip 2, unless the page after is known wide
+        return 2;
+      } else {
+        // Going back: if previous page is known wide, step by 1; else 2
+        const prevCandidate = this.pageIndex - 2;
+        if (prevCandidate < 0) return 1;
+        if (this.widePages.has(this.pageIndex - 1) || this.widePages.has(prevCandidate)) return 1;
+        return 2;
+      }
     }
 
     preload(n) {
@@ -298,14 +342,8 @@
       }
     }
 
-    next() {
-      const stride = this.viewMode === 'double' ? 2 : 1;
-      this.goto(this.pageIndex + stride);
-    }
-    prev() {
-      const stride = this.viewMode === 'double' ? 2 : 1;
-      this.goto(this.pageIndex - stride);
-    }
+    next() { this.goto(this.pageIndex + this.computeStride(true)); }
+    prev() { this.goto(this.pageIndex - this.computeStride(false)); }
 
     onKeydown(e) {
       if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); this.next(); }
@@ -356,10 +394,28 @@
     return match ? match[1] : null;
   }
 
+  let cachedItem = null; // {id, item} — populated by maybeInjectButton, reused by play hijack
+
+  async function getCurrentBookItem() {
+    if (!onDetailsPage() || !window.ApiClient) return null;
+    const itemId = getItemIdFromHash();
+    if (!itemId) return null;
+    if (cachedItem && cachedItem.id === itemId) return cachedItem.item;
+    try {
+      const item = await window.ApiClient.getItem(window.ApiClient.getCurrentUserId(), itemId);
+      if (item.Type !== 'Book') return null;
+      const path = (item.Path || '').toLowerCase();
+      if (!SUPPORTED_EXTS.some(ext => path.endsWith(ext))) return null;
+      cachedItem = { id: itemId, item };
+      return item;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function maybeInjectButton() {
     if (!onDetailsPage()) return;
     if (document.getElementById(BUTTON_ID)) return;
-    if (!window.ApiClient) return;
 
     const buttonsRow =
       document.querySelector('.detailButtons-content') ||
@@ -367,25 +423,16 @@
       document.querySelector('.mainDetailButtons');
     if (!buttonsRow) return;
 
-    const itemId = getItemIdFromHash();
-    if (!itemId) return;
-
-    let item;
-    try {
-      item = await window.ApiClient.getItem(window.ApiClient.getCurrentUserId(), itemId);
-    } catch (_) { return; }
-    if (item.Type !== 'Book') return;
-
-    const path = (item.Path || '').toLowerCase();
-    if (!SUPPORTED_EXTS.some(ext => path.endsWith(ext))) return;
+    const item = await getCurrentBookItem();
+    if (!item) return;
 
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
     btn.type = 'button';
-    btn.className = 'button-flat btnPlay detailButton emby-button';
+    btn.className = 'button-flat detailButton emby-button';
     btn.innerHTML =
       '<div class="detailButton-content">' +
-      '<span class="material-icons detailButton-icon menu_book" aria-hidden="true">menu_book</span>' +
+      '<span class="material-icons detailButton-icon" aria-hidden="true">book</span>' +
       '<span class="button-text detailButton-text">Read</span>' +
       '</div>';
     btn.addEventListener('click', () => new JellybookReader(item).open());
@@ -393,7 +440,32 @@
     console.log('[Jellybook] read button injected for', item.Name);
   }
 
-  function tick() { try { maybeInjectButton(); } catch (err) { console.error('[Jellybook] tick', err); } }
+  async function maybeHijackPlay() {
+    if (!onDetailsPage()) return;
+    // Jellyfin's main Play button on details pages
+    const playBtn = document.querySelector('.mainDetailButtons .btnPlay, .detailButtons .btnPlay, button.btnPlay');
+    if (!playBtn || playBtn.dataset.jbHijacked === '1') return;
+
+    const item = await getCurrentBookItem();
+    if (!item) return;
+
+    playBtn.dataset.jbHijacked = '1';
+    playBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      new JellybookReader(item).open();
+    }, true); // capture phase — fires before Bookshelf's handler
+    console.log('[Jellybook] play button hijacked for', item.Name);
+  }
+
+  // Reset cached item on hash change so we re-look-up for new pages
+  window.addEventListener('hashchange', () => { cachedItem = null; });
+
+  function tick() {
+    try { maybeInjectButton(); } catch (err) { console.error('[Jellybook] inject', err); }
+    try { maybeHijackPlay();  } catch (err) { console.error('[Jellybook] hijack', err); }
+  }
 
   setInterval(tick, POLL_MS);
   if (document.readyState === 'loading') {
