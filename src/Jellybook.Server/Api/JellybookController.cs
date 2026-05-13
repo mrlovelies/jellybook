@@ -1,7 +1,7 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Threading.Tasks;
 using Jellybook.Server.Services;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
@@ -33,21 +33,33 @@ public class JellybookController : ControllerBase
         _logger = logger;
     }
 
+    // ----- web assets -----
+
     [HttpGet("web/main.js")]
     [AllowAnonymous]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    public IActionResult GetMainScript()
+    public IActionResult GetMainScript() => ServeEmbedded("Jellybook.Server.Web.main.js", "application/javascript");
+
+    [HttpGet("web/vendor/jszip.js")]
+    [AllowAnonymous]
+    public IActionResult GetJszip() => ServeEmbedded("Jellybook.Server.Web.vendor.jszip.js", "application/javascript");
+
+    [HttpGet("web/vendor/epubjs.js")]
+    [AllowAnonymous]
+    public IActionResult GetEpubjs() => ServeEmbedded("Jellybook.Server.Web.vendor.epubjs.js", "application/javascript");
+
+    private IActionResult ServeEmbedded(string resourceName, string mimeType)
     {
-        var assembly = Assembly.GetExecutingAssembly();
-        const string resourceName = "Jellybook.Server.Web.main.js";
-        var stream = assembly.GetManifestResourceStream(resourceName);
+        var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
         if (stream is null) return NotFound();
-        return File(stream, "application/javascript");
+        Response.Headers.CacheControl = "public, max-age=86400";
+        return File(stream, mimeType);
     }
 
     [HttpGet("Hello")]
     [AllowAnonymous]
     public IActionResult Hello() => Ok(new { name = "Jellybook", status = "alive" });
+
+    // ----- book api -----
 
     [HttpGet("Book/{itemId:guid}/Manifest")]
     [Authorize]
@@ -57,34 +69,48 @@ public class JellybookController : ControllerBase
         if (item is null || string.IsNullOrEmpty(item.Path) || !System.IO.File.Exists(item.Path))
             return NotFound(new { error = "item not found" });
 
-        if (!ComicArchive.IsComicArchive(item.Path))
+        var format = BookFormats.Detect(item.Path);
+        if (format == BookFormat.Unknown)
             return BadRequest(new { error = "unsupported format", path = item.Path });
 
-        try
+        if (BookFormats.IsComic(format))
         {
-            var pages = ComicArchive.EnumeratePages(item.Path);
-            var ext = System.IO.Path.GetExtension(item.Path).TrimStart('.').ToLowerInvariant();
-            return Ok(new
+            try
             {
-                id = itemId,
-                name = item.Name,
-                type = "comic",
-                format = ext,
-                pageCount = pages.Count,
-                pages = pages.Select(p => new
+                var pages = ComicArchive.EnumeratePages(item.Path);
+                return Ok(new
                 {
-                    index = p.Index,
-                    fileName = p.FileName,
-                    mimeType = p.MimeType,
-                    size = p.Size
-                })
-            });
+                    id = itemId,
+                    name = item.Name,
+                    type = "comic",
+                    format = BookFormats.ToWire(format),
+                    pageCount = pages.Count,
+                    pages = pages.Select(p => new
+                    {
+                        index = p.Index,
+                        fileName = p.FileName,
+                        mimeType = p.MimeType,
+                        size = p.Size
+                    })
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Jellybook: failed to read comic manifest for {ItemId}", itemId);
+                return StatusCode(500, new { error = "failed to read archive", message = ex.Message });
+            }
         }
-        catch (Exception ex)
+
+        // ebook (EPUB) — client fetches the file directly and renders via epub.js
+        var fileInfo = new FileInfo(item.Path);
+        return Ok(new
         {
-            _logger.LogError(ex, "Jellybook: failed to read manifest for {ItemId} at {Path}", itemId, item.Path);
-            return StatusCode(500, new { error = "failed to read archive", message = ex.Message });
-        }
+            id = itemId,
+            name = item.Name,
+            type = "ebook",
+            format = BookFormats.ToWire(format),
+            size = fileInfo.Length
+        });
     }
 
     [HttpGet("Book/{itemId:guid}/Page/{pageIndex:int}")]
@@ -95,8 +121,8 @@ public class JellybookController : ControllerBase
         if (item is null || string.IsNullOrEmpty(item.Path) || !System.IO.File.Exists(item.Path))
             return NotFound();
 
-        if (!ComicArchive.IsComicArchive(item.Path))
-            return BadRequest(new { error = "unsupported format" });
+        if (!BookFormats.IsComic(BookFormats.Detect(item.Path)))
+            return BadRequest(new { error = "page streaming only supported for comics" });
 
         try
         {
@@ -115,13 +141,27 @@ public class JellybookController : ControllerBase
         }
     }
 
+    [HttpGet("Book/{itemId:guid}/Epub")]
+    [Authorize]
+    public IActionResult GetEpub(Guid itemId)
+    {
+        var item = _libraryManager.GetItemById(itemId);
+        if (item is null || string.IsNullOrEmpty(item.Path) || !System.IO.File.Exists(item.Path))
+            return NotFound();
+
+        if (BookFormats.Detect(item.Path) != BookFormat.Epub)
+            return BadRequest(new { error = "not an EPUB" });
+
+        var fs = System.IO.File.OpenRead(item.Path);
+        return File(fs, "application/epub+zip", enableRangeProcessing: true);
+    }
+
     [HttpGet("Book/{itemId:guid}/Progress")]
     [Authorize]
     public IActionResult GetProgress(Guid itemId, [FromQuery] Guid userId)
     {
         var item = _libraryManager.GetItemById(itemId);
         if (item is null) return NotFound();
-
         var user = _userManager.GetUserById(userId);
         if (user is null) return BadRequest(new { error = "user not found" });
 
@@ -145,12 +185,9 @@ public class JellybookController : ControllerBase
     {
         var item = _libraryManager.GetItemById(itemId);
         if (item is null) return NotFound();
-
         var user = _userManager.GetUserById(userId);
         if (user is null) return BadRequest(new { error = "user not found" });
-
-        if (pageCount <= 0)
-            return BadRequest(new { error = "pageCount must be positive" });
+        if (pageCount <= 0) return BadRequest(new { error = "pageCount must be positive" });
 
         pageIndex = Math.Max(0, Math.Min(pageIndex, pageCount - 1));
 
