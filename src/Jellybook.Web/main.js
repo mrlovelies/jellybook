@@ -7,16 +7,18 @@
   const POLL_MS = 500;
   const SUPPORTED_EXTS = ['.cbz', '.cbr'];
 
-  const VIEW_MODES = ['single-fit', 'single-width', 'double'];
+  const VIEW_MODES = ['single-fit', 'single-width', 'double', 'continuous'];
   const MODE_ICONS = {
     'single-fit':   'crop_portrait',
     'single-width': 'view_day',
-    'double':       'auto_stories'
+    'double':       'auto_stories',
+    'continuous':   'view_stream'
   };
   const MODE_LABELS = {
     'single-fit':   'Single (fit)',
     'single-width': 'Single (width)',
-    'double':       'Two-page spread'
+    'double':       'Two-page spread',
+    'continuous':   'Continuous scroll'
   };
 
   // ---------- styles ----------
@@ -70,6 +72,23 @@
 #${READER_ID} .jb-stage.mode-double .jb-img { max-width: 50%; max-height: 100%; object-fit: contain; }
 #${READER_ID} .jb-stage.mode-double .jb-img-right.hidden { display: none; }
 #${READER_ID}.manga .jb-stage.mode-double { flex-direction: row-reverse; }
+#${READER_ID} .jb-stage.mode-continuous {
+  overflow-y: auto; align-items: stretch; justify-content: flex-start;
+  flex-direction: column; padding: 0;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent;
+}
+#${READER_ID} .jb-stage.mode-continuous .jb-img-left,
+#${READER_ID} .jb-stage.mode-continuous .jb-img-right { display: none; }
+#${READER_ID} .jb-cont-column {
+  width: 100%; max-width: 1100px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 4px;
+}
+#${READER_ID} .jb-img-cont {
+  display: block; width: 100%; height: auto;
+  background: #1a1a1a; aspect-ratio: 2/3;
+  /* placeholder aspect-ratio replaced once image loads */
+}
+#${READER_ID} .jb-img-cont[src] { aspect-ratio: auto; }
 #${READER_ID} .jb-zone {
   position: absolute; top: 0; bottom: 0; cursor: pointer;
   z-index: 1;
@@ -120,6 +139,9 @@
       this.viewMode = localStorage.getItem('jellybook:viewMode') || 'single-fit';
       if (!VIEW_MODES.includes(this.viewMode)) this.viewMode = 'single-fit';
       this.manga = localStorage.getItem('jellybook:manga') === '1';
+      this.continuousColumn = null;
+      this.continuousObserver = null;
+      this.continuousScrollHandler = null;
     }
 
     authHeader() {
@@ -163,7 +185,11 @@
             this.lastSavedValue = prog.pageIndex;
           }
         }
-        this.goto(start);
+        if (this.viewMode === 'continuous') {
+          this.initContinuous(start);
+        } else {
+          this.goto(start);
+        }
       } catch (err) {
         console.error('[Jellybook] open failed', err);
         this.showError('Failed to load: ' + err.message);
@@ -176,9 +202,22 @@
         this.saveTimer = null;
         this.saveProgress();
       }
+      this.teardownContinuous();
       window.removeEventListener('keydown', this.boundKeydown);
       document.body.style.overflow = '';
       if (this.root && this.root.parentNode) this.root.parentNode.removeChild(this.root);
+    }
+
+    teardownContinuous() {
+      if (this.continuousObserver) { this.continuousObserver.disconnect(); this.continuousObserver = null; }
+      if (this.continuousScrollHandler && this.stageEl) {
+        this.stageEl.removeEventListener('scroll', this.continuousScrollHandler);
+        this.continuousScrollHandler = null;
+      }
+      if (this.continuousColumn && this.continuousColumn.parentNode) {
+        this.continuousColumn.parentNode.removeChild(this.continuousColumn);
+      }
+      this.continuousColumn = null;
     }
 
     buildDom() {
@@ -250,10 +289,22 @@
 
     cycleViewMode() {
       const idx = VIEW_MODES.indexOf(this.viewMode);
-      this.viewMode = VIEW_MODES[(idx + 1) % VIEW_MODES.length];
-      localStorage.setItem('jellybook:viewMode', this.viewMode);
+      const next = VIEW_MODES[(idx + 1) % VIEW_MODES.length];
+      this.setViewMode(next);
+    }
+
+    setViewMode(mode) {
+      const leavingContinuous = this.viewMode === 'continuous' && mode !== 'continuous';
+      this.viewMode = mode;
+      localStorage.setItem('jellybook:viewMode', mode);
       this.applyViewMode();
-      if (this.manifest) this.render(this.pageIndex, /*force*/ true);
+      if (!this.manifest) return;
+      if (leavingContinuous) this.teardownContinuous();
+      if (mode === 'continuous') {
+        this.initContinuous(this.pageIndex);
+      } else {
+        this.render(this.pageIndex, /*force*/ true);
+      }
     }
 
     goto(n) {
@@ -363,8 +414,103 @@
       }
     }
 
-    next() { this.goto(this.pageIndex + this.computeStride(true)); }
-    prev() { this.goto(this.pageIndex - this.computeStride(false)); }
+    next() {
+      if (this.viewMode === 'continuous') {
+        this.scrollToContinuousPage(this.pageIndex + 1);
+      } else {
+        this.goto(this.pageIndex + this.computeStride(true));
+      }
+    }
+    prev() {
+      if (this.viewMode === 'continuous') {
+        this.scrollToContinuousPage(this.pageIndex - 1);
+      } else {
+        this.goto(this.pageIndex - this.computeStride(false));
+      }
+    }
+
+    // ----- continuous mode -----
+
+    initContinuous(startPage) {
+      this.teardownContinuous(); // ensure clean
+
+      const col = document.createElement('div');
+      col.className = 'jb-cont-column';
+      const imgs = [];
+      for (let i = 0; i < this.manifest.pageCount; i++) {
+        const im = document.createElement('img');
+        im.className = 'jb-img-cont';
+        im.dataset.pageIndex = String(i);
+        im.alt = `Page ${i + 1}`;
+        im.loading = 'lazy';
+        col.appendChild(im);
+        imgs.push(im);
+      }
+      this.stageEl.appendChild(col);
+      this.continuousColumn = col;
+
+      // IntersectionObserver loads pages within ~2 viewports of the viewport
+      this.continuousObserver = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting && !e.target.src) {
+            const idx = parseInt(e.target.dataset.pageIndex, 10);
+            e.target.src = this.pageUrl(idx);
+          }
+        }
+      }, { root: this.stageEl, rootMargin: '400% 0px' });
+      imgs.forEach(im => this.continuousObserver.observe(im));
+
+      // Scroll handler tracks current page (debounced via rAF)
+      let scrollTicking = false;
+      this.continuousScrollHandler = () => {
+        if (scrollTicking) return;
+        scrollTicking = true;
+        requestAnimationFrame(() => {
+          scrollTicking = false;
+          this.updateContinuousCurrentPage();
+        });
+      };
+      this.stageEl.addEventListener('scroll', this.continuousScrollHandler, { passive: true });
+
+      // Initial paint + scroll-to-start (after layout flush)
+      this.counterEl.textContent = `${startPage + 1} / ${this.manifest.pageCount}`;
+      this.pageIndex = startPage;
+      this.loadingEl.classList.remove('show');
+      requestAnimationFrame(() => {
+        const target = imgs[startPage];
+        if (target) target.scrollIntoView({ behavior: 'instant', block: 'start' });
+      });
+    }
+
+    updateContinuousCurrentPage() {
+      if (!this.continuousColumn) return;
+      const mid = this.stageEl.scrollTop + this.stageEl.clientHeight / 2;
+      const imgs = this.continuousColumn.children;
+      // Find the page whose vertical range contains the viewport midline
+      let lo = 0, hi = imgs.length - 1, found = 0;
+      while (lo <= hi) {
+        const m = (lo + hi) >> 1;
+        const im = imgs[m];
+        const top = im.offsetTop;
+        const bot = top + im.offsetHeight;
+        if (mid < top) hi = m - 1;
+        else if (mid >= bot) { found = m; lo = m + 1; }
+        else { found = m; break; }
+      }
+      if (found !== this.pageIndex) {
+        this.pageIndex = found;
+        this.counterEl.textContent = `${found + 1} / ${this.manifest.pageCount}`;
+        this.scheduleSave();
+      }
+    }
+
+    scrollToContinuousPage(n) {
+      if (!this.continuousColumn) return;
+      const pc = this.manifest.pageCount;
+      n = Math.max(0, Math.min(n, pc - 1));
+      const target = this.continuousColumn.children[n];
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 
     onKeydown(e) {
       const fwd = this.manga
