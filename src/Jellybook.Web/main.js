@@ -70,12 +70,15 @@
 #${READER_ID} .jb-stage.mode-double { gap: 2px; padding: 0 24px; }
 #${READER_ID} .jb-stage.mode-double .jb-img { max-width: 50%; max-height: 100%; object-fit: contain; }
 #${READER_ID} .jb-stage.mode-double .jb-img-right.hidden { display: none; }
+#${READER_ID}.manga .jb-stage.mode-double { flex-direction: row-reverse; }
 #${READER_ID} .jb-zone {
   position: absolute; top: 0; bottom: 0; cursor: pointer;
   z-index: 1;
 }
 #${READER_ID} .jb-zone-prev { left: 0; width: 33%; }
 #${READER_ID} .jb-zone-next { right: 0; width: 67%; }
+#${READER_ID}.manga .jb-zone-prev { left: auto; right: 0; width: 33%; }
+#${READER_ID}.manga .jb-zone-next { right: auto; left: 0; width: 67%; }
 #${READER_ID} .jb-loading {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -117,6 +120,7 @@
       this.lastSavedValue = -1;
       this.viewMode = localStorage.getItem('jellybook:viewMode') || 'single-fit';
       if (!VIEW_MODES.includes(this.viewMode)) this.viewMode = 'single-fit';
+      this.manga = localStorage.getItem('jellybook:manga') === '1';
     }
 
     authHeader() {
@@ -189,6 +193,9 @@
             <button class="jb-btn jb-view-mode" title="View mode (m)" aria-label="View mode">
               <span class="material-icons" aria-hidden="true">crop_portrait</span>
             </button>
+            <button class="jb-btn jb-manga" title="Reading direction (r)" aria-label="Reading direction">
+              <span class="material-icons" aria-hidden="true">swap_horiz</span>
+            </button>
             <button class="jb-btn jb-close" aria-label="Close">
               <span class="material-icons" aria-hidden="true">close</span>
             </button>
@@ -211,14 +218,29 @@
       this.stageEl = root.querySelector('.jb-stage');
       this.viewModeBtn = root.querySelector('.jb-view-mode');
       this.viewModeIcon = this.viewModeBtn.querySelector('.material-icons');
+      this.mangaBtn = root.querySelector('.jb-manga');
 
       this.titleEl.textContent = this.item.Name || '';
       this.applyViewMode(); // sets stage class + button icon
+      this.applyManga();
 
       root.querySelector('.jb-close').addEventListener('click', () => this.close());
       root.querySelector('.jb-zone-prev').addEventListener('click', () => this.prev());
       root.querySelector('.jb-zone-next').addEventListener('click', () => this.next());
       this.viewModeBtn.addEventListener('click', () => this.cycleViewMode());
+      this.mangaBtn.addEventListener('click', () => this.toggleManga());
+    }
+
+    applyManga() {
+      this.root.classList.toggle('manga', this.manga);
+      this.mangaBtn.title = (this.manga ? 'Manga (right-to-left)' : 'Western (left-to-right)') + ' — press r';
+      this.mangaBtn.style.opacity = this.manga ? '1' : '0.55';
+    }
+
+    toggleManga() {
+      this.manga = !this.manga;
+      localStorage.setItem('jellybook:manga', this.manga ? '1' : '0');
+      this.applyManga();
     }
 
     applyViewMode() {
@@ -346,12 +368,19 @@
     prev() { this.goto(this.pageIndex - this.computeStride(false)); }
 
     onKeydown(e) {
-      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); this.next(); }
-      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); this.prev(); }
+      const fwd = this.manga
+        ? (e.key === 'ArrowLeft')
+        : (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown');
+      const back = this.manga
+        ? (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown')
+        : (e.key === 'ArrowLeft' || e.key === 'PageUp');
+      if (fwd) { e.preventDefault(); this.next(); }
+      else if (back) { e.preventDefault(); this.prev(); }
       else if (e.key === 'Escape') { e.preventDefault(); this.close(); }
       else if (e.key === 'Home') { e.preventDefault(); this.goto(0); }
       else if (e.key === 'End') { e.preventDefault(); this.goto(this.manifest ? this.manifest.pageCount - 1 : 0); }
       else if (e.key === 'm' || e.key === 'M') { e.preventDefault(); this.cycleViewMode(); }
+      else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); this.toggleManga(); }
     }
 
     showError(msg) {
