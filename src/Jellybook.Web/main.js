@@ -2,7 +2,6 @@
   'use strict';
   console.log('[Jellybook] script loaded');
 
-  const BUTTON_ID = 'jellybook-read-btn';
   const READER_ID = 'jellybook-reader';
   const STYLE_ID = 'jellybook-style';
   const POLL_MS = 500;
@@ -442,33 +441,6 @@
     }
   }
 
-  async function maybeInjectButton() {
-    if (!onDetailsPage()) return;
-    if (document.getElementById(BUTTON_ID)) return;
-
-    const buttonsRow =
-      document.querySelector('.detailButtons-content') ||
-      document.querySelector('.detailButtons') ||
-      document.querySelector('.mainDetailButtons');
-    if (!buttonsRow) return;
-
-    const item = await getCurrentBookItem();
-    if (!item) return;
-
-    const btn = document.createElement('button');
-    btn.id = BUTTON_ID;
-    btn.type = 'button';
-    btn.className = 'button-flat detailButton emby-button';
-    btn.innerHTML =
-      '<div class="detailButton-content">' +
-      '<span class="material-icons detailButton-icon" aria-hidden="true">book</span>' +
-      '<span class="button-text detailButton-text">Read</span>' +
-      '</div>';
-    btn.addEventListener('click', () => new JellybookReader(item).open());
-    buttonsRow.appendChild(btn);
-    console.log('[Jellybook] read button injected for', item.Name);
-  }
-
   async function maybeHijackPlay() {
     if (!onDetailsPage()) return;
     // Jellyfin's main Play button on details pages
@@ -492,8 +464,7 @@
   window.addEventListener('hashchange', () => { cachedItem = null; });
 
   function tick() {
-    try { maybeInjectButton(); } catch (err) { console.error('[Jellybook] inject', err); }
-    try { maybeHijackPlay();  } catch (err) { console.error('[Jellybook] hijack', err); }
+    try { maybeHijackPlay(); } catch (err) { console.error('[Jellybook] hijack', err); }
   }
 
   setInterval(tick, POLL_MS);
