@@ -95,6 +95,12 @@
       this.manifest = null;
       this.preloadCache = new Map();
       this.boundKeydown = this.onKeydown.bind(this);
+      this.saveTimer = null;
+      this.lastSavedPage = -1;
+    }
+
+    authHeader() {
+      return { 'Authorization': `MediaBrowser Token="${window.ApiClient.accessToken()}"` };
     }
 
     pageUrl(n) {
@@ -111,29 +117,68 @@
       window.addEventListener('keydown', this.boundKeydown);
 
       try {
-        const url = `${window.ApiClient.serverAddress()}/Jellybook/Book/${this.item.Id}/Manifest`;
-        const resp = await fetch(url, {
-          headers: { 'Authorization': `MediaBrowser Token="${window.ApiClient.accessToken()}"` }
-        });
-        if (!resp.ok) throw new Error(`manifest ${resp.status}`);
-        this.manifest = await resp.json();
+        const base = window.ApiClient.serverAddress();
+        const itemId = this.item.Id;
+        const userId = window.ApiClient.getCurrentUserId();
+
+        const [manifestResp, progressResp] = await Promise.all([
+          fetch(`${base}/Jellybook/Book/${itemId}/Manifest`, { headers: this.authHeader() }),
+          fetch(`${base}/Jellybook/Book/${itemId}/Progress?userId=${userId}`, { headers: this.authHeader() })
+        ]);
+        if (!manifestResp.ok) throw new Error(`manifest ${manifestResp.status}`);
+        this.manifest = await manifestResp.json();
         if (!this.manifest.pageCount) {
           this.showError('No pages found in this archive.');
           return;
         }
-        this.goto(0);
+
+        let startPage = 0;
+        if (progressResp.ok) {
+          const prog = await progressResp.json();
+          if (typeof prog.pageIndex === 'number' && prog.pageIndex > 0 && prog.pageIndex < this.manifest.pageCount) {
+            startPage = prog.pageIndex;
+            this.lastSavedPage = prog.pageIndex;
+          }
+        }
+        this.goto(startPage);
       } catch (err) {
-        console.error('[Jellybook] manifest fetch failed', err);
+        console.error('[Jellybook] open failed', err);
         this.showError('Failed to load: ' + err.message);
       }
     }
 
     close() {
+      // Flush any pending save before tearing down
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+        this.saveProgress();
+      }
       window.removeEventListener('keydown', this.boundKeydown);
       document.body.style.overflow = '';
       if (this.root && this.root.parentNode) {
         this.root.parentNode.removeChild(this.root);
       }
+    }
+
+    scheduleSave() {
+      if (this.saveTimer) clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => {
+        this.saveTimer = null;
+        this.saveProgress();
+      }, 1500);
+    }
+
+    saveProgress() {
+      if (!this.manifest || this.pageIndex === this.lastSavedPage) return;
+      const base = window.ApiClient.serverAddress();
+      const itemId = this.item.Id;
+      const userId = window.ApiClient.getCurrentUserId();
+      const url = `${base}/Jellybook/Book/${itemId}/Progress?userId=${userId}&pageIndex=${this.pageIndex}&pageCount=${this.manifest.pageCount}`;
+      this.lastSavedPage = this.pageIndex;
+      fetch(url, { method: 'POST', headers: this.authHeader() }).catch(err => {
+        console.warn('[Jellybook] progress save failed', err);
+      });
     }
 
     buildDom() {
@@ -170,6 +215,7 @@
       if (!this.manifest) return;
       const pc = this.manifest.pageCount;
       n = Math.max(0, Math.min(n, pc - 1));
+      if (n === this.pageIndex && this.imgEl.src) return;
       this.pageIndex = n;
       this.counterEl.textContent = `${n + 1} / ${pc}`;
       this.loadingEl.classList.add('show');
@@ -183,6 +229,7 @@
       this.preload(n + 1);
       this.preload(n + 2);
       this.preload(n - 1);
+      this.scheduleSave();
     }
 
     preload(n) {
@@ -251,9 +298,8 @@
     }
     if (item.Type !== 'Book') return;
 
-    // Only inject for CBZ for now (Spike 1 — CBR comes in Spike 2)
     const path = (item.Path || '').toLowerCase();
-    if (!path.endsWith('.cbz')) return;
+    if (!path.endsWith('.cbz') && !path.endsWith('.cbr')) return;
 
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
