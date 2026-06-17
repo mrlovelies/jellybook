@@ -1,0 +1,23 @@
+name: ci
+
+# Builds the plugin and runs the unit tests on every push/PR. The tests cover the
+# pure logic that page order and filtering depend on (NaturalComparer ordering,
+# ComicArchive page enumeration over a real .cbz fixture).
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+      - name: Build plugin
+        run: dotnet build src/Jellybook.Server/Jellybook.Server.csproj -c Release
+      - name: Test
+        run: dotnet test tests/Jellybook.Tests/Jellybook.Tests.csproj -c Release --verbosity normal

@@ -1,5 +1,7 @@
 # Jellybook
 
+[![ci](https://github.com/mrlovelies/jellybook/actions/workflows/ci.yml/badge.svg)](https://github.com/mrlovelies/jellybook/actions/workflows/ci.yml)
+
 A comic book reader for Jellyfin that doesn't feel like an afterthought.
 
 Jellyfin's built-in book support — and the community Bookshelf plugin that fills the metadata gap — get the basics done for ebooks. Comics are a different story: the default reader is single-page, fit-to-viewport, no preload, no display modes, no manga support. Jellybook replaces that with a real comic reader, while leaving Bookshelf in charge of ebooks where it already does the job.
