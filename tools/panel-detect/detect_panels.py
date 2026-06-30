@@ -24,6 +24,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,8 +32,16 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+# Must match the server's ComicArchive.ImageExtensions (incl. .avif) or page sets diverge.
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif")
 SCHEMA_VERSION = 1
+
+
+def _natkey(name):
+    """Natural sort matching the server's NaturalComparer (numeric runs compared as
+    numbers, text case-insensitively) — otherwise '10.jpg' < '2.jpg' and the sidecar's
+    page indices wouldn't line up with how the plugin streams pages."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 # Fallback thresholds — when tripped, the page becomes a single full-page panel.
 SPREAD_ASPECT = 1.2     # w/h above this is a double-page spread
@@ -52,8 +61,9 @@ def find_kumiko():
 def page_images(cbz, dest):
     """Extract image entries from a CBZ in archive (page) order -> ordered paths."""
     with zipfile.ZipFile(cbz) as z:
-        names = sorted(n for n in z.namelist()
-                       if n.lower().endswith(IMG_EXTS) and not n.endswith("/"))
+        names = sorted((n for n in z.namelist()
+                        if n.lower().endswith(IMG_EXTS) and not n.endswith("/")),
+                       key=_natkey)
         paths = []
         for i, n in enumerate(names):
             p = dest / f"{i:04d}{os.path.splitext(n)[1].lower()}"
@@ -138,6 +148,11 @@ def main():
     cbzs = [root] if root.suffix.lower() == ".cbz" else sorted(root.rglob("*.cbz"))
     if not cbzs:
         sys.exit(f"No .cbz found under {root}")
+    if root.is_dir():
+        cbr = list(root.rglob("*.cbr"))
+        if cbr:
+            print(f"note: skipping {len(cbr)} .cbr file(s) — not supported by this tool yet "
+                  "(reader serves them, but guided view falls back to full pages)")
 
     for cbz in cbzs:
         sidecar = cbz.parent / (cbz.name + ".panels.json")
