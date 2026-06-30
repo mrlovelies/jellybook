@@ -147,7 +147,14 @@ def main():
         try:
             result = detect(cbz, kumiko, args.rtl)
         except subprocess.CalledProcessError as e:
-            print("FAIL", cbz.name, (e.stderr or "")[-200:])
+            print("FAIL (kumiko)", cbz.name, "-", (e.stderr or "")[-160:])
+            continue
+        except (zipfile.BadZipFile, OSError) as e:
+            # A corrupt/partial .cbz (or a .cbr misnamed) must not halt the whole run.
+            print("FAIL (bad archive)", cbz.name, "-", e)
+            continue
+        except Exception as e:
+            print("FAIL", cbz.name, "-", type(e).__name__, e)
             continue
         if not result:
             print("no images:", cbz.name)
