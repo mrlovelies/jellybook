@@ -133,6 +133,24 @@ public class JellybookController : ControllerBase
         }
     }
 
+    // Guided-view panel map: a sidecar "<comic>.cbz.panels.json" generated offline by
+    // tools/panel-detect. Served verbatim; 404 when absent so the reader uses full pages.
+    [HttpGet("Book/{itemId:guid}/Panels")]
+    [Authorize]
+    public IActionResult GetPanels(Guid itemId)
+    {
+        var item = _libraryManager.GetItemById(itemId);
+        if (item is null || string.IsNullOrEmpty(item.Path))
+            return NotFound();
+
+        var sidecar = item.Path + ".panels.json";
+        if (!System.IO.File.Exists(sidecar))
+            return NotFound(new { error = "no panel map" });
+
+        Response.Headers.CacheControl = "private, max-age=86400";
+        return PhysicalFile(sidecar, "application/json");
+    }
+
     [HttpGet("Book/{itemId:guid}/Epub")]
     [Authorize]
     public IActionResult GetEpub(Guid itemId)
