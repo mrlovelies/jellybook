@@ -166,13 +166,31 @@ public class JellybookController : ControllerBase
         return File(fs, "application/epub+zip", enableRangeProcessing: true);
     }
 
+    /// <summary>
+    /// The user id asserted by the access token itself. Progress endpoints must act on
+    /// THIS user — trusting a userId query parameter let any authenticated user read or
+    /// overwrite another user's reading position (IDOR).
+    /// </summary>
+    private Guid? AuthenticatedUserId()
+    {
+        // Jellyfin stamps its principal with this claim (InternalClaimTypes.UserId);
+        // stable across 10.x and the standard way plugins identify the caller.
+        var claim = User.FindFirst("Jellyfin-UserId")?.Value;
+        return Guid.TryParse(claim, out var id) ? id : null;
+    }
+
     [HttpGet("Book/{itemId:guid}/Progress")]
     [Authorize]
-    public IActionResult GetProgress(Guid itemId, [FromQuery] Guid userId)
+    public IActionResult GetProgress(Guid itemId, [FromQuery] Guid? userId = null)
     {
         var item = _libraryManager.GetItemById(itemId);
         if (item is null) return NotFound();
-        var user = _userManager.GetUserById(userId);
+        var authId = AuthenticatedUserId();
+        if (authId is null) return Unauthorized();
+        // Clients may still pass their own id (both ours do); anyone else's is refused.
+        if (userId is { } explicitId && explicitId != Guid.Empty && explicitId != authId)
+            return Forbid();
+        var user = _userManager.GetUserById(authId.Value);
         if (user is null) return BadRequest(new { error = "user not found" });
 
         var data = _userDataManager.GetUserData(user, item);
@@ -189,13 +207,17 @@ public class JellybookController : ControllerBase
     [Authorize]
     public IActionResult PostProgress(
         Guid itemId,
-        [FromQuery] Guid userId,
         [FromQuery] int pageIndex,
-        [FromQuery] int pageCount)
+        [FromQuery] int pageCount,
+        [FromQuery] Guid? userId = null)
     {
         var item = _libraryManager.GetItemById(itemId);
         if (item is null) return NotFound();
-        var user = _userManager.GetUserById(userId);
+        var authId = AuthenticatedUserId();
+        if (authId is null) return Unauthorized();
+        if (userId is { } explicitId && explicitId != Guid.Empty && explicitId != authId)
+            return Forbid();
+        var user = _userManager.GetUserById(authId.Value);
         if (user is null) return BadRequest(new { error = "user not found" });
         if (pageCount <= 0) return BadRequest(new { error = "pageCount must be positive" });
 
